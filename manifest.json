@@ -1,0 +1,12 @@
+{
+    "display_name": "Swipe Sculpt",
+    "loading_order": 10,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "aeoness",
+    "version": "0.1.0",
+    "homePage": "https://github.com/aeoness/swipe-sculpt",
+    "auto_update": true
+}
