@@ -55,3 +55,7 @@ Instead of manually toggling through swipes or copying text back and forth betwe
 ## 📄 License
 
 [MIT](LICENSE)
+
+---
+
+> *Inspired by the multi-instance Wall UI layout originally pioneered by jojoe77777 and the Minecraft speedrunning community.*
