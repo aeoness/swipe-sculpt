@@ -58,4 +58,4 @@ Instead of manually toggling through swipes or copying text back and forth betwe
 
 ---
 
-> *Inspired by the multi-instance Wall UI layout originally pioneered by jojoe77777 and the Minecraft speedrunning community.*
+> *Inspired by the multi-instance "wall" UI from the Minecraft speedrunning community (Julti, SeedQueue, and related tools).*
