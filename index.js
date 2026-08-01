@@ -12,30 +12,175 @@ const MODULE_NAME = 'swipe-sculpt';
  * buffer itself outlives both.
  */
 const compositeState = {
-    /** @type {string} */
+    /**
+     * Grabbed fragments in order. The source of truth in blocks mode; each is
+     * one draggable block.
+     * @type {string[]}
+     */
+    segments: [],
+    /**
+     * The free-form text. The source of truth in text mode.
+     * @type {string}
+     */
     text: '',
-    /** @type {Set<(text: string) => void>} */
+    /** @type {'blocks'|'text'} */
+    mode: 'text',
+    /**
+     * Where the next grabbed fragment lands in text mode. Mirrors the editor's
+     * caret; null means "append at the end".
+     * @type {number|null}
+     */
+    caret: null,
+    /** @type {Set<() => void>} */
     listeners: new Set(),
 
     /**
-     * Appends a fragment verbatim. No separator is inserted — seams are the
-     * user's to smooth, and silently adding whitespace would break the
-     * byte-for-byte guarantee that makes grabbing trustworthy.
+     * The effective composite string, whichever mode is active. This is what
+     * gets committed, and what the character count reflects.
+     * @returns {string}
+     */
+    /**
+     * The blocks joined with a single space, but only where the seam doesn't
+     * already have whitespace — so fragments read naturally without double
+     * spaces. Each grabbed fragment stays byte-exact; only the join adds
+     * spacing. Mode-independent, so value() and setMode() agree on the bytes.
+     * @returns {string}
+     */
+    joinedSegments() {
+        if (this.segments.length === 0) {
+            return '';
+        }
+        return this.segments.reduce((acc, seg) => {
+            const needsSpace = acc.length > 0 && seg.length > 0
+                && !/\s$/.test(acc) && !/^\s/.test(seg);
+            return acc + (needsSpace ? ' ' : '') + seg;
+        });
+    },
+
+    value() {
+        return this.mode === 'blocks' ? this.joinedSegments() : this.text;
+    },
+
+    /**
+     * A grab. In blocks mode it becomes a new block; in text mode it's inserted
+     * at the tracked caret. No separator is ever added between fragments —
+     * seams are the user's to smooth, and silently adding whitespace would
+     * break the byte-for-byte guarantee that makes grabbing trustworthy.
      * @param {string} fragment
      */
-    append(fragment) {
-        this.text += fragment;
+    insert(fragment) {
+        if (this.mode === 'blocks') {
+            this.segments.push(fragment);
+        } else {
+            // Clamp: a stale caret (e.g. after Clear) must never index past end.
+            const at = this.caret == null ? this.text.length : Math.min(this.caret, this.text.length);
+            this.text = this.text.slice(0, at) + fragment + this.text.slice(at);
+            this.caret = at + fragment.length;
+        }
         this.emit();
     },
 
-    /** @param {string} value */
-    set(value) {
+    /**
+     * Records the text editor's caret so the next grab lands there. Doesn't
+     * emit — it changes nothing the listeners render.
+     * @param {number|null} position
+     */
+    setCaret(position) {
+        this.caret = position;
+    },
+
+    /**
+     * Free-form text edit (text mode only).
+     * @param {string} value
+     */
+    setText(value) {
         this.text = value;
         this.emit();
     },
 
     /**
-     * @param {(text: string) => void} listener
+     * Reorders a block (blocks mode). Drag-and-drop calls this.
+     * @param {number} from
+     * @param {number} to
+     */
+    moveSegment(from, to) {
+        if (from === to) {
+            return;
+        }
+        const [moved] = this.segments.splice(from, 1);
+        this.segments.splice(to, 0, moved);
+        this.emit();
+    },
+
+    /**
+     * Removes a block (blocks mode).
+     * @param {number} index
+     */
+    removeSegment(index) {
+        this.segments.splice(index, 1);
+        this.emit();
+    },
+
+    /**
+     * Appends a new (empty by default) block and returns its index, so the
+     * caller can open it for editing straight away.
+     * @param {string} [text]
+     * @returns {number}
+     */
+    addSegment(text = '') {
+        this.segments.push(text);
+        this.emit();
+        return this.segments.length - 1;
+    },
+
+    /**
+     * Replaces a block's text (in-place editing).
+     * @param {number} index
+     * @param {string} text
+     */
+    updateSegment(index, text) {
+        this.segments[index] = text;
+        this.emit();
+    },
+
+    /**
+     * Switches views. Blocks → Text flattens the blocks into one editable
+     * string but keeps the blocks in reserve. Text → Blocks restores those
+     * blocks untouched if the text wasn't edited (the common "just peeking"
+     * round-trip); only if the text was actually changed does it collapse to a
+     * single block, since freely edited prose can't be re-split into the
+     * fragments it came from.
+     * @param {'blocks'|'text'} next
+     */
+    setMode(next) {
+        if (next === this.mode) {
+            return;
+        }
+        if (next === 'text') {
+            // Flatten using the same smart join value() uses, so the Text view
+            // shows exactly what a blocks-mode commit would produce.
+            this.text = this.joinedSegments();
+            this.caret = this.text.length;
+        } else if (this.text !== this.joinedSegments()) {
+            // The text diverged from the blocks it came from, so it was edited:
+            // collapse to one block. Otherwise leave `segments` as-is and the
+            // original blocks come straight back.
+            this.segments = this.text ? [this.text] : [];
+        }
+        this.mode = next;
+        this.emit();
+    },
+
+    /** Empties everything. */
+    clear() {
+        this.segments = [];
+        this.text = '';
+        this.caret = null;
+        this.emit();
+    },
+
+    /**
+     * @param {() => void} listener
      * @returns {() => void} Unsubscribe function.
      */
     subscribe(listener) {
@@ -45,7 +190,7 @@ const compositeState = {
 
     emit() {
         for (const listener of this.listeners) {
-            listener(this.text);
+            listener();
         }
     },
 };
@@ -147,7 +292,15 @@ function syncActiveSwipe(messageId) {
     const context = SillyTavern.getContext();
     const message = context.chat[messageId];
 
-    message.mes = message.swipes[message.swipe_id];
+    // Clamp: a missing or out-of-range swipe_id (old/imported/malformed chats,
+    // which this tool deliberately reaches into) would make mes = undefined and
+    // then persist it. This is the single writer of mes, so repairing swipe_id
+    // here is what makes the mes/swipes invariant actually safe.
+    const id = Math.min(
+        Math.max(Number(message.swipe_id ?? 0), 0),
+        Math.max(0, (message.swipes?.length ?? 1) - 1));
+    message.swipe_id = id;
+    message.mes = message.swipes[id];
 
     // ST only keeps a window of recent messages in the DOM, and
     // `updateMessageBlock` throws on one that isn't rendered (it hands an empty
@@ -182,11 +335,23 @@ async function saveSwipeEdit(messageId, swipeIndex, newText) {
     // does — otherwise the two editors would disagree on trailing whitespace.
     const text = context.powerUserSettings.trim_spaces ? newText.trim() : newText;
 
-    message.swipes[swipeIndex] = text;
-    syncActiveSwipe(messageId);
+    // Snapshot for rollback: if the save fails, memory must not keep an edit
+    // that never reached disk.
+    const previous = { swipe: message.swipes[swipeIndex], mes: message.mes };
 
-    context.chatMetadata.tainted = true;
-    await queueChatSave();
+    // Everything that mutates state lives inside the try, so a throw anywhere
+    // (including syncActiveSwipe's DOM work) hits the same rollback.
+    try {
+        message.swipes[swipeIndex] = text;
+        syncActiveSwipe(messageId);
+        context.chatMetadata.tainted = true;
+        await queueChatSave();
+    } catch (error) {
+        message.swipes[swipeIndex] = previous.swipe;
+        message.mes = previous.mes;
+        syncActiveSwipe(messageId);
+        throw error;
+    }
 }
 
 /**
@@ -206,27 +371,46 @@ async function commitComposite(messageId, newText) {
     const message = context.chat[messageId];
     const text = context.powerUserSettings.trim_spaces ? newText.trim() : newText;
 
-    const newIndex = message.swipes.length;
-    message.swipes.push(text);
-
-    if (!Array.isArray(message.swipe_info)) {
-        message.swipe_info = [];
-    }
-    message.swipe_info[newIndex] = {
-        send_date: new Date().toISOString(),
-        // Null rather than copied: this swipe was assembled by hand, so there
-        // is no generation to have started or finished. `sculpted` is what
-        // marks it as hand-built in the grid.
-        gen_started: null,
-        gen_finished: null,
-        extra: { sculpted: true },
+    // Snapshot for rollback: if the save fails, we must not leave the message
+    // displaying (and prompting from) a sculpted swipe that never reached disk.
+    const previous = {
+        swipes: [...message.swipes],
+        swipeInfo: Array.isArray(message.swipe_info) ? [...message.swipe_info] : undefined,
+        swipeId: message.swipe_id,
+        mes: message.mes,
     };
 
-    message.swipe_id = newIndex;
-    syncActiveSwipe(messageId);
+    const newIndex = message.swipes.length;
+    // All mutations inside the try, so any throw hits the rollback.
+    try {
+        message.swipes.push(text);
 
-    context.chatMetadata.tainted = true;
-    await queueChatSave();
+        if (!Array.isArray(message.swipe_info)) {
+            message.swipe_info = [];
+        }
+        message.swipe_info[newIndex] = {
+            send_date: new Date().toISOString(),
+            // Null rather than copied: this swipe was assembled by hand, so there
+            // is no generation to have started or finished. `sculpted` is what
+            // marks it as hand-built in the grid.
+            gen_started: null,
+            gen_finished: null,
+            extra: { sculpted: true },
+        };
+
+        message.swipe_id = newIndex;
+        syncActiveSwipe(messageId);
+
+        context.chatMetadata.tainted = true;
+        await queueChatSave();
+    } catch (error) {
+        message.swipes = previous.swipes;
+        message.swipe_info = previous.swipeInfo;
+        message.swipe_id = previous.swipeId;
+        message.mes = previous.mes;
+        syncActiveSwipe(messageId);
+        throw error;
+    }
     return newIndex;
 }
 
@@ -237,11 +421,18 @@ async function commitComposite(messageId, newText) {
  * @param {number} messageId Its index in the chat array.
  * @param {number} index Which swipe this card represents.
  */
-function beginEdit(card, message, messageId, index) {
+function beginEdit(card, message, messageId, index, query = '') {
     if (card.classList.contains('swipeSculptCard--editing')) {
         return;
     }
+    // One pencil edit at a time — otherwise cancelling one clears the guard
+    // while another stays open, re-opening the silent-loss hole it exists to close.
+    if (swipeEditActive) {
+        toastr.info('Finish the swipe edit you already have open first.', 'Swipe Sculpt');
+        return;
+    }
     card.classList.add('swipeSculptCard--editing');
+    swipeEditActive = true;
 
     const body = card.querySelector('.swipeSculptCardBody');
     const textarea = document.createElement('textarea');
@@ -261,8 +452,9 @@ function beginEdit(card, message, messageId, index) {
 
     const finish = () => {
         card.classList.remove('swipeSculptCard--editing');
+        swipeEditActive = false;
         // Restore whichever view the card was showing before the edit started.
-        renderCardBody(body, message, messageId, index, card.dataset.mode === 'source' ? 'source' : 'rendered');
+        renderCardBody(body, message, messageId, index, card.dataset.mode === 'source' ? 'source' : 'rendered', query);
         controls.remove();
     };
 
@@ -305,12 +497,71 @@ function beginEdit(card, message, messageId, index) {
  * @param {number} index Which swipe to render.
  * @param {'rendered'|'source'} mode
  */
-function renderCardBody(body, message, messageId, index, mode = 'rendered') {
+/**
+ * Wraps every case-insensitive occurrence of `query` inside `root` in a
+ * <mark>, the way Ctrl+F highlights matches.
+ *
+ * Walks text nodes and splits them, rather than a regex over innerHTML, so it
+ * never damages the surrounding markup. Matches that straddle an element
+ * boundary (e.g. half inside an <em>) won't be caught — a rare case for the
+ * plain-word searches this is for, and not worth the complexity of handling.
+ * @param {HTMLElement} root
+ * @param {string} query
+ */
+function highlightInElement(root, query) {
+    const needle = query.toLowerCase();
+    if (!needle) {
+        return;
+    }
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    const textNodes = [];
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        textNodes.push(node);
+    }
+
+    for (const textNode of textNodes) {
+        const text = textNode.nodeValue;
+        const haystack = text.toLowerCase();
+        if (!haystack.includes(needle)) {
+            continue;
+        }
+        const fragment = document.createDocumentFragment();
+        let cursor = 0;
+        let hit = haystack.indexOf(needle);
+        while (hit !== -1) {
+            if (hit > cursor) {
+                fragment.appendChild(document.createTextNode(text.slice(cursor, hit)));
+            }
+            const mark = document.createElement('mark');
+            mark.className = 'swipeSculptMark';
+            mark.textContent = text.slice(hit, hit + needle.length);
+            fragment.appendChild(mark);
+            cursor = hit + needle.length;
+            hit = haystack.indexOf(needle, cursor);
+        }
+        if (cursor < text.length) {
+            fragment.appendChild(document.createTextNode(text.slice(cursor)));
+        }
+        textNode.parentNode.replaceChild(fragment, textNode);
+    }
+}
+
+/**
+ * @param {HTMLElement} body
+ * @param {object} message
+ * @param {number} messageId
+ * @param {number} index
+ * @param {'rendered'|'source'} mode
+ * @param {string} query Search term to highlight in the rendered view.
+ */
+function renderCardBody(body, message, messageId, index, mode = 'rendered', query = '') {
     if (mode === 'source') {
         const source = document.createElement('textarea');
         source.classList.add('swipeSculptSource');
         // Read-only: this view exists for selecting, not editing. Editing still
-        // goes through the pencil, which is the only path that writes.
+        // goes through the pencil, which is the only path that writes. A plain
+        // textarea can't style part of its text, so search highlighting only
+        // applies to the rendered view above, not here.
         source.readOnly = true;
         source.value = message.swipes[index];
         body.replaceChildren(source);
@@ -325,6 +576,9 @@ function renderCardBody(body, message, messageId, index, mode = 'rendered') {
         message.is_user,
         messageId,
     );
+    if (query.trim()) {
+        highlightInElement(body, query.trim());
+    }
 }
 
 /**
@@ -341,19 +595,78 @@ function getSelectedFragment(card) {
 }
 
 /**
+ * Returns the plain text selected inside a card's rendered body, or '' if the
+ * current selection isn't there. This is the browser's rendered text, with
+ * markdown markers already stripped, so it is only trustworthy once mapped
+ * back to the source — see resolveRenderedGrab.
+ * @param {HTMLElement} card
+ * @returns {string}
+ */
+function getRenderedSelection(card) {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+        return '';
+    }
+    const body = card.querySelector('.swipeSculptCardBody');
+    if (!body) {
+        return '';
+    }
+    // Only honour a selection that actually lives inside this card's text.
+    if (!body.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+        return '';
+    }
+    return selection.toString();
+}
+
+/**
+ * Maps a rendered-view selection back to an exact slice of the source.
+ *
+ * The browser hands back rendered text with markdown stripped, so we look for
+ * that text in the source and return the source slice. The match can only
+ * succeed where the source is byte-identical to the selection — i.e. there was
+ * no markdown inside it — so a successful grab is exact by construction. A
+ * selection that crosses formatting won't be found; one that repeats is
+ * ambiguous. Both fail here and the caller falls back to the code view, so a
+ * wrong fragment is never grabbed silently.
+ * @param {string} sourceText
+ * @param {string} selectedText
+ * @returns {{ok: true, fragment: string} | {ok: false, reason: 'empty'|'notfound'|'ambiguous'}}
+ */
+function resolveRenderedGrab(sourceText, selectedText) {
+    if (!selectedText) {
+        return { ok: false, reason: 'empty' };
+    }
+    const first = sourceText.indexOf(selectedText);
+    if (first === -1) {
+        return { ok: false, reason: 'notfound' };
+    }
+    if (sourceText.indexOf(selectedText, first + 1) !== -1) {
+        return { ok: false, reason: 'ambiguous' };
+    }
+    return { ok: true, fragment: sourceText.slice(first, first + selectedText.length) };
+}
+
+/**
  * Builds the grid of swipe cards for one message.
  * @param {object} message The chat message to render swipes for.
  * @param {number} messageId Its index in the chat array.
  * @returns {HTMLElement} The grid container.
  */
-function buildSwipeGrid(message, messageId, onChanged) {
+function buildSwipeGrid(message, messageId, onChanged, query = '') {
     const swipes = message.swipes ?? [];
     const currentIndex = typeof message.swipe_id === 'number' ? message.swipe_id : 0;
+    // Match against source text (not rendered) so a search finds terms
+    // regardless of how their markdown renders. Real indices are preserved:
+    // skipped cards just aren't built, so a shown card keeps its true number.
+    const q = query.trim().toLowerCase();
 
     const grid = document.createElement('div');
     grid.classList.add('swipeSculptGrid');
 
     swipes.forEach((swipeText, index) => {
+        if (q && !swipeText.toLowerCase().includes(q)) {
+            return;
+        }
         const card = document.createElement('div');
         card.classList.add('swipeSculptCard');
         if (index === currentIndex) {
@@ -390,58 +703,96 @@ function buildSwipeGrid(message, messageId, onChanged) {
         const actions = document.createElement('div');
         actions.classList.add('swipeSculptCardActions');
 
-        // Only meaningful in source view, where an exact selection is possible.
-        // Shown at all times in rendered view, it just told people to select
-        // text they had in fact already selected — the selection was in the
-        // rendered HTML, which this deliberately refuses to read.
+        // The grab button works in both views now. In the code (source) view it
+        // reads the textarea selection directly and shows a live character
+        // count; in the rendered view it maps the browser selection back to the
+        // source (see resolveRenderedGrab).
         const grabButton = document.createElement('div');
         grabButton.classList.add('swipeSculptGrabButton', 'menu_button');
-        grabButton.hidden = true;
 
         const updateGrabButton = () => {
-            const fragment = getSelectedFragment(card);
-            grabButton.textContent = fragment
-                ? `Grab ${fragment.length}`
-                : 'Select text';
-            grabButton.classList.toggle('disabled', !fragment);
+            if (card.dataset.mode === 'source') {
+                const fragment = getSelectedFragment(card);
+                grabButton.textContent = fragment ? `Grab ${fragment.length}` : 'Select text';
+                grabButton.classList.toggle('disabled', !fragment);
+            } else {
+                // The rendered selection lives in window.getSelection, which
+                // isn't worth watching per-card, so the button stays a plain,
+                // always-ready "Grab" and validates on click.
+                grabButton.textContent = 'Grab';
+                grabButton.classList.remove('disabled');
+            }
         };
 
-        // Without this the button steals focus on press and the textarea's
-        // selection collapses before the click handler ever runs.
+        const setMode = (next) => {
+            card.dataset.mode = next;
+            card.classList.toggle('swipeSculptCard--source', next === 'source');
+            renderCardBody(body, message, messageId, index, next, query);
+            updateGrabButton();
+            if (next === 'source') {
+                // Track the selection live so the button reflects what would
+                // actually be grabbed.
+                const source = card.querySelector('.swipeSculptSource');
+                ['select', 'keyup', 'mouseup', 'focus'].forEach(
+                    eventName => source.addEventListener(eventName, updateGrabButton));
+            }
+        };
+
+        // Without this the button steals focus on press and the selection —
+        // in the textarea or the rendered body — collapses before the click
+        // handler can read it.
         grabButton.addEventListener('mousedown', (event) => event.preventDefault());
         grabButton.addEventListener('click', () => {
-            const fragment = getSelectedFragment(card);
-            if (!fragment) {
+            // A grab mutates the composite; doing that while a block chip is open
+            // in its editor would rebuild the chips and orphan the edit's index.
+            if (blockEditActive) {
+                toastr.info('Finish the block you are editing before grabbing.', 'Swipe Sculpt');
                 return;
             }
-            compositeState.append(fragment);
-            toastr.success(`Grabbed ${fragment.length} characters.`, 'Swipe Sculpt');
+            if (card.dataset.mode === 'source') {
+                const fragment = getSelectedFragment(card);
+                if (!fragment) {
+                    return;
+                }
+                compositeState.insert(fragment);
+                toastr.success(`Grabbed ${fragment.length} characters.`, 'Swipe Sculpt');
+                return;
+            }
+
+            // Rendered view: resolve the selection to an exact source slice.
+            const result = resolveRenderedGrab(message.swipes[index], getRenderedSelection(card));
+            if (result.ok) {
+                compositeState.insert(result.fragment);
+                toastr.success(`Grabbed ${result.fragment.length} characters.`, 'Swipe Sculpt');
+                return;
+            }
+            if (result.reason === 'empty') {
+                toastr.info('Select some text in this swipe first.', 'Swipe Sculpt');
+                return;
+            }
+            // Crosses formatting (not found) or repeats (ambiguous): drop to the
+            // code view so it can be grabbed by exact position, not guesswork.
+            setMode('source');
+            toastr.info(result.reason === 'ambiguous'
+                ? 'That text appears more than once. Select it here to grab the exact one.'
+                : 'That selection includes formatting. Select it in this raw view to grab it exactly.',
+            'Swipe Sculpt');
         });
+
+        // Card starts in the rendered view, so give the button its label now.
+        updateGrabButton();
 
         const sourceButton = document.createElement('div');
         sourceButton.classList.add('swipeSculptSourceButton', 'fa-solid', 'fa-code');
         sourceButton.title = 'Show raw text, so fragments can be selected exactly';
         sourceButton.addEventListener('click', () => {
-            const next = card.dataset.mode === 'source' ? 'rendered' : 'source';
-            card.dataset.mode = next;
-            card.classList.toggle('swipeSculptCard--source', next === 'source');
-            renderCardBody(body, message, messageId, index, next);
-
-            grabButton.hidden = next !== 'source';
-            if (next === 'source') {
-                updateGrabButton();
-                // Track the selection live so the button always reflects what
-                // would actually be grabbed.
-                const source = card.querySelector('.swipeSculptSource');
-                ['select', 'keyup', 'mouseup', 'focus'].forEach(
-                    eventName => source.addEventListener(eventName, updateGrabButton));
-            }
+            setMode(card.dataset.mode === 'source' ? 'rendered' : 'source');
         });
 
         const editButton = document.createElement('div');
         editButton.classList.add('swipeSculptEditButton', 'fa-solid', 'fa-pencil');
         editButton.title = 'Edit this swipe';
-        editButton.addEventListener('click', () => beginEdit(card, message, messageId, index));
+        editButton.addEventListener('click', () => beginEdit(card, message, messageId, index, query));
 
         // Two-step, like the other destructive controls: a deleted swipe is
         // gone, and the whole point of this tool is that swipes are expensive.
@@ -457,6 +808,10 @@ function buildSwipeGrid(message, messageId, onChanged) {
         deleteButton.addEventListener('click', async () => {
             if (isOnlySwipe) {
                 toastr.info('A message must keep at least one swipe.', 'Swipe Sculpt');
+                return;
+            }
+            if (swipeEditActive) {
+                toastr.info('Finish or cancel the open swipe edit first.', 'Swipe Sculpt');
                 return;
             }
             // This card's index is only trustworthy until another delete lands.
@@ -497,7 +852,7 @@ function buildSwipeGrid(message, messageId, onChanged) {
         card.dataset.mode = 'rendered';
         card.appendChild(header);
         card.appendChild(body);
-        renderCardBody(body, message, messageId, index, 'rendered');
+        renderCardBody(body, message, messageId, index, 'rendered', query);
         grid.appendChild(card);
     });
 
@@ -528,7 +883,7 @@ function buildMessagePicker(targets, selectedId, onChange) {
         option.value = String(id);
         option.selected = id === selectedId;
         const count = message.swipes.length;
-        option.textContent = `#${id} — ${message.name ?? 'Unknown'} (${count} swipe${count === 1 ? '' : 's'})`;
+        option.textContent = `#${id}: ${message.name ?? 'Unknown'} (${count} swipe${count === 1 ? '' : 's'})`;
         select.appendChild(option);
     });
 
@@ -548,6 +903,22 @@ function buildMessagePicker(targets, selectedId, onChange) {
  * the stale click happened to hit the last-swipe guard.
  */
 let mutationPending = false;
+
+/**
+ * True while a swipe is open in the pencil editor. Commit and delete rebuild the
+ * grid, which would silently discard that unsaved edit — so they refuse while
+ * this is set. Reset whenever the grid rebuilds, so a rebuild that tears the
+ * editor out some other way can't leave the flag stuck on.
+ */
+let swipeEditActive = false;
+
+/**
+ * True while a composite block chip is open in its inline editor. Grabbing (or
+ * anything that mutates the segments) while a chip editor is focused would
+ * rebuild the chips and orphan that editor's index — so grab refuses while this
+ * is set. Cleared whenever an edit is confirmed or cancelled.
+ */
+let blockEditActive = false;
 
 /**
  * Deletes one swipe from a message.
@@ -574,38 +945,62 @@ async function deleteSwipeAt(messageId, swipeIndex) {
         Math.max(Number(message.swipe_id ?? 0), 0),
         message.swipes.length - 1);
 
-    message.swipes.splice(swipeIndex, 1);
-    if (Array.isArray(message.swipe_info) && message.swipe_info.length) {
-        message.swipe_info.splice(swipeIndex, 1);
-    }
+    // Snapshot for rollback if the save fails.
+    const previous = {
+        swipes: [...message.swipes],
+        swipeInfo: Array.isArray(message.swipe_info) ? [...message.swipe_info] : undefined,
+        swipeId: message.swipe_id,
+        mes: message.mes,
+    };
 
-    // Keep whatever was active still active. Removing an earlier swipe shifts
-    // it down one; removing a later one leaves it alone; removing the active
-    // swipe itself falls through to its neighbour.
+    // All mutations inside the try, so any throw hits the rollback.
     let newIndex;
-    if (swipeIndex < currentIndex) {
-        newIndex = currentIndex - 1;
-    } else if (swipeIndex > currentIndex) {
-        newIndex = currentIndex;
-    } else {
-        newIndex = Math.min(swipeIndex, message.swipes.length - 1);
+    try {
+        message.swipes.splice(swipeIndex, 1);
+        if (Array.isArray(message.swipe_info) && message.swipe_info.length) {
+            message.swipe_info.splice(swipeIndex, 1);
+        }
+
+        // Keep whatever was active still active. Removing an earlier swipe shifts
+        // it down one; removing a later one leaves it alone; removing the active
+        // swipe itself falls through to its neighbour.
+        if (swipeIndex < currentIndex) {
+            newIndex = currentIndex - 1;
+        } else if (swipeIndex > currentIndex) {
+            newIndex = currentIndex;
+        } else {
+            newIndex = Math.min(swipeIndex, message.swipes.length - 1);
+        }
+
+        message.swipe_id = newIndex;
+        syncActiveSwipe(messageId);
+
+        context.chatMetadata.tainted = true;
+        await queueChatSave();
+    } catch (error) {
+        message.swipes = previous.swipes;
+        message.swipe_info = previous.swipeInfo;
+        message.swipe_id = previous.swipeId;
+        message.mes = previous.mes;
+        syncActiveSwipe(messageId);
+        throw error;
     }
 
-    message.swipe_id = newIndex;
-    syncActiveSwipe(messageId);
-
-    context.chatMetadata.tainted = true;
-
-    // Other extensions listen for this; deleting quietly would leave them stale.
+    // Announce the deletion only after it's persisted, so other extensions never
+    // react to a delete we then rolled back. A throwing third-party listener
+    // must not turn our successful delete into a reported failure.
     if (context.event_types?.MESSAGE_SWIPE_DELETED) {
-        await context.eventSource.emit(context.event_types.MESSAGE_SWIPE_DELETED, {
-            messageId,
-            swipeId: swipeIndex,
-            newSwipeId: newIndex,
-        });
+        try {
+            await context.eventSource.emit(context.event_types.MESSAGE_SWIPE_DELETED, {
+                messageId,
+                swipeId: swipeIndex,
+                newSwipeId: newIndex,
+            });
+        } catch (error) {
+            console.error(`[${MODULE_NAME}] A MESSAGE_SWIPE_DELETED listener threw.`, error);
+        }
     }
 
-    await queueChatSave();
     return newIndex;
 }
 
@@ -631,8 +1026,26 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
     const count = document.createElement('span');
     count.classList.add('swipeSculptCompositeCount');
 
-    // Two-step, because a grab can't be undone and a stray click here would
-    // throw away an entire stitch.
+    // Blocks | Text view toggle.
+    const modeToggle = document.createElement('div');
+    modeToggle.classList.add('swipeSculptModeToggle');
+    const blocksTab = document.createElement('div');
+    blocksTab.classList.add('swipeSculptModeTab');
+    blocksTab.textContent = 'Blocks';
+    blocksTab.title = 'Arrange grabbed fragments as draggable blocks';
+    const textTab = document.createElement('div');
+    textTab.classList.add('swipeSculptModeTab');
+    textTab.textContent = 'Text';
+    textTab.title = 'Edit the whole composite as free text';
+    blocksTab.addEventListener('click', () => compositeState.setMode('blocks'));
+    textTab.addEventListener('click', () => compositeState.setMode('text'));
+    modeToggle.append(blocksTab, textTab);
+    const updateModeToggle = () => {
+        blocksTab.classList.toggle('swipeSculptModeTab--active', compositeState.mode === 'blocks');
+        textTab.classList.toggle('swipeSculptModeTab--active', compositeState.mode === 'text');
+    };
+
+    // Two-step, because a stray click here would throw away an entire stitch.
     const clearButton = document.createElement('div');
     clearButton.classList.add('menu_button', 'swipeSculptClearButton');
     let armed = false;
@@ -643,16 +1056,16 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
     };
     resetClearButton();
     clearButton.addEventListener('click', () => {
-        if (!compositeState.text) {
+        if (!compositeState.value()) {
             return;
         }
         if (!armed) {
             armed = true;
-            clearButton.textContent = 'Clear — sure?';
+            clearButton.textContent = 'Confirm Clear';
             clearButton.classList.add('swipeSculptClearButton--armed');
             return;
         }
-        compositeState.set('');
+        compositeState.clear();
         resetClearButton();
     });
 
@@ -662,17 +1075,21 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
 
     const resetCommitButton = () => {
         commitArmed = false;
-        commitButton.textContent = 'Commit as new swipe';
+        commitButton.textContent = 'Commit as New Swipe';
         commitButton.classList.remove('swipeSculptCommitButton--armed');
     };
     resetCommitButton();
 
     commitButton.addEventListener('click', async () => {
+        if (swipeEditActive) {
+            toastr.info('Finish or cancel the open swipe edit first.', 'Swipe Sculpt');
+            return;
+        }
         const context = SillyTavern.getContext();
         const messageId = getTargetMessageId();
 
-        if (!compositeState.text.trim()) {
-            toastr.info('Nothing to commit — the composite is empty.', 'Swipe Sculpt');
+        if (!compositeState.value().trim()) {
+            toastr.info('Nothing to commit. The composite is empty.', 'Swipe Sculpt');
             return;
         }
 
@@ -694,7 +1111,7 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
         mutationPending = true;
         commitButton.classList.add('disabled');
         try {
-            const newIndex = await commitComposite(messageId, compositeState.text);
+            const newIndex = await commitComposite(messageId, compositeState.value());
             toastr.success(`Committed as swipe ${newIndex + 1}.`, 'Swipe Sculpt');
             onCommitted();
         } catch (error) {
@@ -707,30 +1124,254 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
         }
     });
 
-    header.append(title, count, commitButton, clearButton);
+    header.append(title, count, modeToggle, commitButton, clearButton);
 
+    // The text-mode editor. Persistent (not rebuilt each render) so typing keeps
+    // its caret; the value-guard in render only rewrites it on external changes.
     const editor = document.createElement('textarea');
     editor.classList.add('swipeSculptCompositeEditor', 'text_pole');
-    editor.placeholder = 'Grabbed fragments land here.\n\nEdit freely — this is a scratch pad. Nothing reaches the chat until you commit it as a new swipe.';
-    editor.addEventListener('input', () => compositeState.set(editor.value));
+    editor.placeholder = 'Grabbed fragments land here.\n\nEdit freely. This is a scratch pad. Nothing reaches the chat until you commit it as a new swipe.';
+    // Keep the tracked caret in sync with wherever the user's cursor actually
+    // is, so a grab drops in there rather than always at the end. The textarea
+    // keeps its selectionStart even while blurred (i.e. while the user is off
+    // selecting text in a swipe card), so this stays accurate.
+    const trackCaret = () => compositeState.setCaret(editor.selectionStart);
+    ['keyup', 'click', 'mouseup', 'select', 'focus'].forEach(
+        eventName => editor.addEventListener(eventName, trackCaret));
+    editor.addEventListener('input', () => {
+        compositeState.setText(editor.value);
+        compositeState.setCaret(editor.selectionStart);
+    });
 
-    const render = (text) => {
-        // Only touch the textarea when the change came from somewhere else;
-        // rewriting it while the user types would reset their caret.
-        if (editor.value !== text) {
-            editor.value = text;
-            editor.scrollTop = editor.scrollHeight;
+    const bodyHost = document.createElement('div');
+    bodyHost.classList.add('swipeSculptCompositeBody');
+
+    // Which block index is being dragged, shared across one drag operation.
+    let dragFrom = null;
+
+    // Inline block-editing state, shared across a single edit.
+    let editingIndex = null;
+    let editingTextarea = null;
+    let editingIsNew = false;
+    let addButtonRef = null;
+
+    const setAddButtonLabel = () => {
+        if (!addButtonRef) {
+            return;
         }
-        count.textContent = `${text.length} characters`;
-        if (!text) {
+        const editing = editingIndex !== null;
+        addButtonRef.textContent = editing ? 'Confirm' : '+ Add block';
+        addButtonRef.classList.toggle('swipeSculptAddBlock--confirm', editing);
+    };
+
+    // Saves the block being edited (a blank block is kept) and closes it.
+    const confirmEdit = () => {
+        if (editingIndex === null) {
+            return;
+        }
+        blockEditActive = false;
+        const index = editingIndex;
+        const value = editingTextarea ? editingTextarea.value : '';
+        editingIndex = null;
+        editingTextarea = null;
+        editingIsNew = false;
+        compositeState.updateSegment(index, value); // emits -> rebuild
+    };
+
+    // Abandons the edit. A brand-new block is removed (Escape = never mind);
+    // an existing block reverts to its saved text.
+    const cancelEdit = () => {
+        if (editingIndex === null) {
+            return;
+        }
+        blockEditActive = false;
+        const index = editingIndex;
+        const wasNew = editingIsNew;
+        editingIndex = null;
+        editingTextarea = null;
+        editingIsNew = false;
+        if (wasNew) {
+            compositeState.removeSegment(index); // emits -> rebuild
+        } else {
+            compositeState.emit(); // rebuild from unchanged segments -> revert
+        }
+    };
+
+    // Turns a block into an inline editor. Used by clicking a block's text and
+    // by "+ Add block" (which opens the fresh block straight away, isNew=true).
+    const enterEdit = (chip, index, isNew = false) => {
+        if (editingIndex !== null) {
+            return;
+        }
+        editingIndex = index;
+        editingIsNew = isNew;
+        blockEditActive = true;
+        chip.classList.add('swipeSculptChip--editing');
+        chip.draggable = false;
+        // The × doubles as "cancel this edit" while editing (see its click
+        // handler); just relabel it here.
+        const del = chip.querySelector('.swipeSculptChipDelete');
+        if (del) {
+            del.title = 'Cancel edit';
+        }
+
+        const textSpan = chip.querySelector('.swipeSculptChipText');
+        const textarea = document.createElement('textarea');
+        textarea.classList.add('swipeSculptChipEditor', 'text_pole');
+        textarea.value = compositeState.segments[index] ?? '';
+        editingTextarea = textarea;
+
+        // Clicking outside confirms. There's deliberately no Escape handling:
+        // Escape belongs to the popup dialog (it closes the modal), so an edit is
+        // cancelled with the block's × instead.
+        textarea.addEventListener('blur', () => confirmEdit());
+
+        textSpan.replaceWith(textarea);
+        textarea.focus();
+        setAddButtonLabel();
+    };
+
+    const buildChips = () => {
+        const wrap = document.createElement('div');
+        wrap.classList.add('swipeSculptBlocks');
+
+        const list = document.createElement('div');
+        list.classList.add('swipeSculptChips');
+        if (compositeState.segments.length === 0) {
+            const hint = document.createElement('div');
+            hint.classList.add('swipeSculptChipsEmpty');
+            hint.textContent = 'Grab fragments or add your own. Click a block to edit, drag to reorder, X to remove.';
+            list.appendChild(hint);
+        } else {
+            compositeState.segments.forEach((segment, index) => {
+                const chip = document.createElement('div');
+                chip.classList.add('swipeSculptChip');
+                chip.draggable = true;
+                chip.dataset.index = String(index);
+
+                const handle = document.createElement('span');
+                handle.classList.add('swipeSculptChipHandle', 'fa-solid', 'fa-grip-vertical');
+
+                const text = document.createElement('span');
+                text.classList.add('swipeSculptChipText');
+                if (segment === '') {
+                    text.classList.add('swipeSculptChipText--empty');
+                    text.textContent = 'click to add text';
+                } else {
+                    text.textContent = segment;
+                }
+                text.title = 'Click to edit this block';
+                text.addEventListener('click', () => enterEdit(chip, index));
+
+                const del = document.createElement('span');
+                del.classList.add('swipeSculptChipDelete', 'fa-solid', 'fa-xmark');
+                del.title = 'Remove this block';
+                // Don't steal focus on press, so clicking × while editing doesn't
+                // blur (and thereby confirm) the block before we can cancel it.
+                del.addEventListener('mousedown', (event) => event.preventDefault());
+                del.addEventListener('click', (event) => {
+                    event.stopPropagation();
+                    if (editingIndex === index) {
+                        // The × of the block being edited cancels that edit
+                        // (removes a new block, reverts an existing one).
+                        cancelEdit();
+                    } else {
+                        // Deleting a *different* block: flush any in-progress edit
+                        // to its correct index FIRST, before this removal shifts
+                        // the list — otherwise the edit would save to the wrong
+                        // block (or fail to display). Then delete.
+                        if (editingIndex !== null) {
+                            confirmEdit();
+                        }
+                        compositeState.removeSegment(index);
+                    }
+                });
+
+                chip.addEventListener('dragstart', () => {
+                    dragFrom = index;
+                    chip.classList.add('swipeSculptChip--dragging');
+                });
+                chip.addEventListener('dragend', () => {
+                    dragFrom = null;
+                    list.querySelectorAll('.swipeSculptChip--over, .swipeSculptChip--dragging')
+                        .forEach(c => c.classList.remove('swipeSculptChip--over', 'swipeSculptChip--dragging'));
+                });
+                chip.addEventListener('dragover', (event) => {
+                    // preventDefault is what actually allows a drop to land here.
+                    event.preventDefault();
+                    if (dragFrom !== null && dragFrom !== index) {
+                        chip.classList.add('swipeSculptChip--over');
+                    }
+                });
+                chip.addEventListener('dragleave', () => chip.classList.remove('swipeSculptChip--over'));
+                chip.addEventListener('drop', (event) => {
+                    event.preventDefault();
+                    chip.classList.remove('swipeSculptChip--over');
+                    if (dragFrom !== null && dragFrom !== index) {
+                        compositeState.moveSegment(dragFrom, index);
+                    }
+                });
+
+                chip.append(handle, text, del);
+                list.appendChild(chip);
+            });
+        }
+
+        const addButton = document.createElement('div');
+        addButton.classList.add('menu_button', 'swipeSculptAddBlock');
+        addButton.title = 'Add a new block and type your own text';
+        addButtonRef = addButton;
+        setAddButtonLabel();
+        // preventDefault so clicking Confirm doesn't blur the editor first — we
+        // confirm explicitly here instead, avoiding a double save.
+        addButton.addEventListener('mousedown', (event) => event.preventDefault());
+        addButton.addEventListener('click', () => {
+            if (editingIndex !== null) {
+                confirmEdit();
+                return;
+            }
+            const newIndex = compositeState.addSegment('');
+            const newChip = bodyHost.querySelector(`.swipeSculptChip[data-index="${newIndex}"]`);
+            if (newChip) {
+                enterEdit(newChip, newIndex, true);
+            }
+        });
+
+        wrap.append(list, addButton);
+        return wrap;
+    };
+
+    const render = () => {
+        const value = compositeState.value();
+        count.textContent = `${value.length} characters`;
+        updateModeToggle();
+        if (!value) {
             resetClearButton();
+        }
+
+        if (compositeState.mode === 'text') {
+            if (!bodyHost.contains(editor)) {
+                bodyHost.replaceChildren(editor);
+            }
+            // Only rewrite the textarea when the change came from elsewhere;
+            // doing it mid-type would reset the caret.
+            if (editor.value !== value) {
+                editor.value = value;
+                const caret = compositeState.caret == null ? value.length : compositeState.caret;
+                editor.selectionStart = editor.selectionEnd = caret;
+                if (caret === value.length) {
+                    editor.scrollTop = editor.scrollHeight;
+                }
+            }
+        } else {
+            bodyHost.replaceChildren(buildChips());
         }
     };
 
     const dispose = compositeState.subscribe(render);
-    render(compositeState.text);
+    render();
 
-    pane.append(header, editor);
+    pane.append(header, bodyHost);
     return { element: pane, dispose };
 }
 
@@ -750,11 +1391,40 @@ async function showSwipeSculpt(messageId) {
     let activeId = targets.some(t => t.id === messageId)
         ? messageId
         : targets[targets.length - 1].id;
+    let searchQuery = '';
 
     const wrapper = document.createElement('div');
     wrapper.classList.add('swipeSculptModal');
 
     const gridHost = document.createElement('div');
+
+    // Search row: filters the grid to swipes whose source contains the query.
+    const searchRow = document.createElement('div');
+    searchRow.classList.add('swipeSculptSearch');
+    const searchInput = document.createElement('input');
+    searchInput.type = 'search';
+    searchInput.classList.add('text_pole');
+    searchInput.placeholder = 'Search swipes…';
+    const searchCount = document.createElement('span');
+    searchCount.classList.add('swipeSculptSearchCount');
+    searchRow.append(searchInput, searchCount);
+
+    const updateSearchCount = (shown, total) => {
+        searchCount.textContent = searchQuery.trim()
+            ? `showing ${shown} of ${total}`
+            : `${total} swipe${total === 1 ? '' : 's'}`;
+    };
+
+    // Debounced so typing on an 80-swipe message doesn't re-render the whole
+    // grid on every keystroke.
+    let searchTimer = null;
+    searchInput.addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(() => {
+            searchQuery = searchInput.value;
+            renderGrid();
+        }, 150);
+    });
 
     // Deleting shifts every index after it, so the grid and the picker's swipe
     // counts both have to be rebuilt from the current chat state.
@@ -766,12 +1436,29 @@ async function showSwipeSculpt(messageId) {
     };
 
     const renderGrid = () => {
+        // Any grid rebuild tears out an open pencil editor, so clear the guard
+        // here — this covers the empty-search and no-target early returns too,
+        // which never reach buildSwipeGrid and would otherwise soft-lock it on.
+        swipeEditActive = false;
         const target = targets.find(t => t.id === activeId);
         if (!target) {
             gridHost.replaceChildren();
+            updateSearchCount(0, 0);
             return;
         }
-        gridHost.replaceChildren(buildSwipeGrid(target.message, target.id, refreshAll));
+        const swipes = target.message.swipes ?? [];
+        const q = searchQuery.trim().toLowerCase();
+        const shown = q ? swipes.filter(s => s.toLowerCase().includes(q)).length : swipes.length;
+        updateSearchCount(shown, swipes.length);
+
+        if (q && shown === 0) {
+            const empty = document.createElement('div');
+            empty.classList.add('swipeSculptEmpty');
+            empty.textContent = `No swipes on this message contain “${searchQuery.trim()}”.`;
+            gridHost.replaceChildren(empty);
+            return;
+        }
+        gridHost.replaceChildren(buildSwipeGrid(target.message, target.id, refreshAll, searchQuery));
     };
 
     const pickerHost = document.createElement('div');
@@ -787,6 +1474,7 @@ async function showSwipeSculpt(messageId) {
     const composite = buildCompositePane(() => activeId, refreshAll);
     wrapper.appendChild(composite.element);
 
+    wrapper.appendChild(searchRow);
     wrapper.appendChild(gridHost);
     renderGrid();
 

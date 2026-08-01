@@ -27,6 +27,39 @@
     max-width: 1500px;
 }
 
+.swipeSculptSearch {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
+.swipeSculptSearch input {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.swipeSculptSearchCount {
+    flex: 0 0 auto;
+    font-size: 0.85em;
+    opacity: 0.7;
+    white-space: nowrap;
+}
+
+.swipeSculptEmpty {
+    padding: 20px;
+    text-align: center;
+    opacity: 0.6;
+    font-style: italic;
+}
+
+/* Ctrl+F-style highlight of the search term inside the rendered swipe text. */
+.swipeSculptMark {
+    background-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBlurTintColor);
+    border-radius: 2px;
+    padding: 0 1px;
+}
+
 .swipeSculptGrid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
@@ -145,6 +178,7 @@
 .swipeSculptCompositeHeader {
     display: flex;
     align-items: center;
+    flex-wrap: wrap;
     gap: 10px;
 }
 
@@ -180,6 +214,154 @@
     font-family: var(--monoFontFamily, monospace);
     font-size: 0.85em;
     line-height: 1.5;
+}
+
+/* Keep the composite a consistent size whether it's showing chips or the text
+   editor, full or empty — otherwise the box collapses to the hint line in an
+   empty Blocks view. */
+.swipeSculptCompositeBody {
+    min-height: 22vh;
+}
+
+.swipeSculptModeToggle {
+    display: inline-flex;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.swipeSculptModeTab {
+    padding: 2px 10px;
+    font-size: 0.8em;
+    cursor: pointer;
+    opacity: 0.6;
+    user-select: none;
+}
+
+.swipeSculptModeTab--active {
+    background-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBlurTintColor);
+    opacity: 1;
+}
+
+/* Blocks view: grabbed fragments as a reorderable list. */
+.swipeSculptChips {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    max-height: 22vh;
+    overflow-y: auto;
+}
+
+.swipeSculptChipsEmpty {
+    padding: 16px;
+    text-align: center;
+    opacity: 0.5;
+    font-style: italic;
+    font-size: 0.85em;
+}
+
+.swipeSculptChip {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 6px;
+    background-color: var(--black30a);
+    cursor: grab;
+    user-select: none;
+}
+
+.swipeSculptChip--dragging {
+    opacity: 0.4;
+}
+
+.swipeSculptChip--over {
+    border-color: var(--SmartThemeQuoteColor);
+    border-style: dashed;
+}
+
+.swipeSculptChipHandle {
+    opacity: 0.4;
+    padding-top: 2px;
+    flex: 0 0 auto;
+}
+
+.swipeSculptChipText {
+    flex: 1 1 auto;
+    white-space: pre-wrap;
+    max-height: 4.5em;
+    overflow: hidden;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: 0.8em;
+    line-height: 1.5;
+    word-break: break-word;
+    /* Hint that clicking the text opens it for editing. */
+    cursor: text;
+}
+
+.swipeSculptChipEditor {
+    flex: 1 1 auto;
+    width: 100%;
+    min-height: 3em;
+    resize: vertical;
+    white-space: pre-wrap;
+    font-family: var(--monoFontFamily, monospace);
+    font-size: 0.8em;
+    line-height: 1.5;
+}
+
+.swipeSculptChip--editing {
+    cursor: default;
+    border-color: var(--SmartThemeQuoteColor);
+}
+
+.swipeSculptBlocks {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.swipeSculptChipText--empty {
+    opacity: 0.45;
+    font-style: italic;
+}
+
+/* Full-width bar at the bottom of the blocks area. Dashed = "add another",
+   solid accent = "Confirm" while a block is being edited. */
+.swipeSculptAddBlock {
+    width: 100%;
+    padding: 4px 10px;
+    font-size: 0.8em;
+    text-align: center;
+    background-color: transparent;
+    border: 1px dashed var(--SmartThemeBorderColor);
+    opacity: 0.8;
+}
+
+.swipeSculptAddBlock:hover {
+    opacity: 1;
+}
+
+.swipeSculptAddBlock--confirm {
+    border-style: solid;
+    border-color: var(--SmartThemeQuoteColor);
+    background-color: var(--SmartThemeQuoteColor);
+    color: var(--SmartThemeBlurTintColor);
+    opacity: 1;
+}
+
+.swipeSculptChipDelete {
+    flex: 0 0 auto;
+    cursor: pointer;
+    opacity: 0.5;
+    padding: 2px 4px;
+}
+
+.swipeSculptChipDelete:hover {
+    opacity: 1;
+    color: var(--crimson70a, crimson);
 }
 
 /* An editing card grows to fit its textarea rather than scrolling internally. */
