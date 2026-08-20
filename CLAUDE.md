@@ -27,6 +27,11 @@ stitch by hand.
 5. Any message by ID, not just the last one.
 
 ## Scope: NOT NOW — do not build without asking first
+> Design history, possibly retired. Block mode + the sticky composite pane
+> (both shipped in 0.2.0) may already cover what this was meant to solve.
+> Kept as a record of the original thinking, not as a pending feature — do
+> not treat it as planned work.
+
 A floating, persistent editor window: own toggle icon, draggable,
 resizable, stays open while browsing swipes, retains contents when
 closed and reopened, position/size persisted.
@@ -56,6 +61,20 @@ into a standalone window later is a rewrite instead of a refactor.
   Confirmed: branching from an old message carried its swipes into the
   new chat. ST simply doesn't render swipe arrows past the most recent
   message. There is an archive of unused swipes going back weeks.
+
+## Known edge cases (documented, not bugs)
+- Trim Spaces (ST power-user setting, `powerUserSettings.trim_spaces`):
+  when on, both `saveSwipeEdit` and `commitComposite` run the text
+  through `.trim()` before saving — deliberately, to match ST's own
+  editor. So a composite with intentional leading/trailing whitespace
+  loses it on commit. Each grabbed fragment is still stored byte-exact;
+  only the final trim of the whole composite is affected. This is the one
+  place the byte-for-byte guarantee yields to a user setting, and it does
+  so on purpose (a Sculpt edit should behave like any other ST edit).
+- Line endings: fragments are stored exactly as grabbed. If the chat file
+  uses CRLF, grabs carry CRLF; if LF, LF. Sculpt normalizes neither. Not
+  observed to cause problems — noted so a future CRLF surprise isn't
+  mistaken for a grabbing bug.
 
 ## Acceptance criteria
 Markdown fidelity is the make-or-break. The user's prose uses *italics*

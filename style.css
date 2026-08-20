@@ -244,12 +244,13 @@
     opacity: 1;
 }
 
-/* Blocks view: grabbed fragments as a reorderable list. */
+/* Blocks view: grabbed fragments as a reorderable list. Roomier than the
+   old 22vh so full-height blocks have space before the list itself scrolls. */
 .swipeSculptChips {
     display: flex;
     flex-direction: column;
     gap: 6px;
-    max-height: 22vh;
+    max-height: 40vh;
     overflow-y: auto;
 }
 
@@ -291,8 +292,10 @@
 .swipeSculptChipText {
     flex: 1 1 auto;
     white-space: pre-wrap;
-    max-height: 4.5em;
-    overflow: hidden;
+    /* Show the whole grabbed fragment — the block is as tall as its text.
+       This used to clip at 4.5em with overflow:hidden and no indicator, which
+       read as "the grab lost text" even though the full text was stored and
+       only showed on edit. A tall block just makes the chips list scroll. */
     font-family: var(--monoFontFamily, monospace);
     font-size: 0.8em;
     line-height: 1.5;

@@ -8,10 +8,11 @@ Instead of manually toggling through swipes or copying text back and forth betwe
 
 ## 🎨 Features
 
-* **Visual Grid View:** Gallery layout displaying every swipe side-by-side in a responsive grid — for any message, not just the most recent one.
-* **Byte-Exact Highlight Capture:** Flip any card to its raw source, select a clause or half-sentence, and append it to the composite with markdown (`*italics*`, `**bold**`), line breaks, and spacing preserved exactly.
-* **Live Composite Editor:** A sticky, directly editable staging box at the top of the modal for smoothing the seams between stitched fragments.
-* **Commit as New Swipe:** Save your finished composite back into the message as a brand-new swipe — your original generations are never overwritten.
+* **Visual Grid View:** Gallery layout displaying every swipe side-by-side in a responsive grid, for any message, not just the most recent one.
+* **Search & Highlight:** Filter the grid to just the swipes that contain a word or phrase, with every match highlighted in the text so you can spot it at a glance.
+* **Byte-Exact Grabbing:** Select a clause or half-sentence from any swipe and drop it into the composite with its markdown (`*italics*`, `**bold**`), line breaks, and spacing preserved exactly. Grab straight from the formatted view, or flip a card to its raw `</>` source when your selection crosses formatting and needs to be picked out precisely.
+* **Blocks or Text:** Work on the composite two ways. In **Blocks** view each grabbed fragment is a draggable card you can reorder, click to edit, delete, or add to by hand. In **Text** view the whole thing becomes one freely editable box for smoothing the seams.
+* **Commit as New Swipe:** Save your finished composite back into the message as a brand-new swipe, so your original generations are never overwritten.
 * **Per-Swipe Editing & Deletion:** Edit or delete any individual swipe in place, with a two-step confirm on destructive actions.
 * **Sculpted Markers:** Hand-assembled swipes are visually flagged in the grid, distinct from generated ones.
 * **Native Styling:** Fits directly into SillyTavern's default dark aesthetic.
@@ -33,10 +34,10 @@ Instead of manually toggling through swipes or copying text back and forth betwe
 
 1. Generate a few swipes on a message.
 2. Open the **wand menu** (🪄, bottom-left of the chat bar) and click **Swipe Sculpt**.
-3. Browse the grid of swipes. Use the message dropdown at the top to sculpt any message in the chat, not just the last one.
-4. On a card, click the **`</>`** icon to show its raw source, select the text you want, and press **Grab** — it lands in the **Composite** box at the top.
-5. Grab from as many swipes as you like, then fine-tune the seams directly in the Composite editor.
-6. Click **Commit as new swipe** to append your assembled version back to the message as a new swipe.
+3. Browse the grid of swipes. Use the message dropdown at the top to sculpt any message in the chat, not just the last one. Type in the **Search** box to narrow the grid to swipes that mention a word or phrase.
+4. Select the text you want in a swipe and press **Grab**. It drops into the **Composite** box at your cursor. You can grab straight from the formatted view; if your selection crosses markdown, Sculpt flips that card to its raw `</>` source so you can grab it exactly.
+5. Grab from as many swipes as you like. Reorder the pieces in **Blocks** view, or switch to **Text** view to smooth the seams by hand.
+6. Click **Commit as New Swipe** to add your assembled version back to the message as a new swipe.
 
 ---
 
@@ -55,7 +56,3 @@ Instead of manually toggling through swipes or copying text back and forth betwe
 ## 📄 License
 
 [MIT](LICENSE)
-
----
-
-> *Inspired by the multi-instance "wall" UI from the Minecraft speedrunning community (Julti, SeedQueue, and related tools).*

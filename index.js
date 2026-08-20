@@ -3,6 +3,13 @@ import { isChatSaving, updateSwipeCounter } from '../../../../script.js';
 const MODULE_NAME = 'swipe-sculpt';
 
 /**
+ * How long a two-step destructive button (Clear, Commit-on-old-message, Delete)
+ * stays armed before quietly disarming itself. Long enough for a deliberate
+ * second click, short enough that a forgotten arm doesn't ambush a later click.
+ */
+const DISARM_MS = 4000;
+
+/**
  * The composite (scratch) buffer that grabbed fragments accumulate into.
  *
  * Deliberately module-level rather than owned by the modal. The brief calls for
@@ -63,9 +70,11 @@ const compositeState = {
 
     /**
      * A grab. In blocks mode it becomes a new block; in text mode it's inserted
-     * at the tracked caret. No separator is ever added between fragments —
-     * seams are the user's to smooth, and silently adding whitespace would
-     * break the byte-for-byte guarantee that makes grabbing trustworthy.
+     * at the tracked caret. The fragment itself is always stored byte-for-byte,
+     * never padded or trimmed, so a grab is exact. In blocks mode a single space
+     * may be added *at join time* (see joinedSegments) where two blocks would
+     * otherwise collide — that's a property of the join, not of the stored
+     * fragment, so the byte-for-byte guarantee still holds per fragment.
      * @param {string} fragment
      */
     insert(fragment) {
@@ -799,11 +808,19 @@ function buildSwipeGrid(message, messageId, onChanged, query = '') {
         const deleteButton = document.createElement('div');
         deleteButton.classList.add('swipeSculptDeleteButton', 'fa-solid', 'fa-trash-can');
         let deleteArmed = false;
+        let deleteDisarmTimer = null;
         const isOnlySwipe = swipes.length <= 1;
         deleteButton.title = isOnlySwipe
             ? 'A message must keep at least one swipe'
             : 'Delete this swipe';
         deleteButton.classList.toggle('disabled', isOnlySwipe);
+
+        const disarmDelete = () => {
+            deleteArmed = false;
+            clearTimeout(deleteDisarmTimer);
+            deleteButton.classList.remove('swipeSculptDeleteButton--armed');
+            deleteButton.title = 'Delete this swipe';
+        };
 
         deleteButton.addEventListener('click', async () => {
             if (isOnlySwipe) {
@@ -822,8 +839,13 @@ function buildSwipeGrid(message, messageId, onChanged, query = '') {
                 deleteArmed = true;
                 deleteButton.classList.add('swipeSculptDeleteButton--armed');
                 deleteButton.title = 'Click again to delete this swipe';
+                // Auto-disarm so an armed trash-can doesn't sit red forever,
+                // waiting to eat an unrelated second click much later.
+                clearTimeout(deleteDisarmTimer);
+                deleteDisarmTimer = setTimeout(disarmDelete, DISARM_MS);
                 return;
             }
+            clearTimeout(deleteDisarmTimer);
 
             mutationPending = true;
             try {
@@ -833,8 +855,7 @@ function buildSwipeGrid(message, messageId, onChanged, query = '') {
             } catch (error) {
                 console.error(`[${MODULE_NAME}] Failed to delete swipe.`, error);
                 toastr.error('Could not delete the swipe. Check the console.', 'Swipe Sculpt');
-                deleteArmed = false;
-                deleteButton.classList.remove('swipeSculptDeleteButton--armed');
+                disarmDelete();
             } finally {
                 mutationPending = false;
             }
@@ -1049,8 +1070,10 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
     const clearButton = document.createElement('div');
     clearButton.classList.add('menu_button', 'swipeSculptClearButton');
     let armed = false;
+    let clearDisarmTimer = null;
     const resetClearButton = () => {
         armed = false;
+        clearTimeout(clearDisarmTimer);
         clearButton.textContent = 'Clear';
         clearButton.classList.remove('swipeSculptClearButton--armed');
     };
@@ -1063,6 +1086,10 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
             armed = true;
             clearButton.textContent = 'Confirm Clear';
             clearButton.classList.add('swipeSculptClearButton--armed');
+            // Auto-disarm: an armed destructive button left sitting is a trap for
+            // the next unrelated click. Walk away and it quietly resets.
+            clearTimeout(clearDisarmTimer);
+            clearDisarmTimer = setTimeout(resetClearButton, DISARM_MS);
             return;
         }
         compositeState.clear();
@@ -1072,9 +1099,11 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
     const commitButton = document.createElement('div');
     commitButton.classList.add('menu_button', 'swipeSculptCommitButton');
     let commitArmed = false;
+    let commitDisarmTimer = null;
 
     const resetCommitButton = () => {
         commitArmed = false;
+        clearTimeout(commitDisarmTimer);
         commitButton.textContent = 'Commit as New Swipe';
         commitButton.classList.remove('swipeSculptCommitButton--armed');
     };
@@ -1093,6 +1122,13 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
             return;
         }
 
+        // A commit is already in flight; ignore extra clicks until it resolves,
+        // so its index math never runs twice. Checked before the arm branch (as
+        // the delete button does) so a click during the save can't re-arm.
+        if (mutationPending) {
+            return;
+        }
+
         // Committing activates the new swipe, which rewrites what this message
         // says. On anything but the newest message, later replies were written
         // in response to the old text, so that gets a deliberate second step.
@@ -1101,12 +1137,16 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
             commitArmed = true;
             commitButton.textContent = 'Commit — changes an older message?';
             commitButton.classList.add('swipeSculptCommitButton--armed');
+            // Auto-disarm so a stale "yes, the old message" arm can't ride along
+            // into a later, unrelated click.
+            clearTimeout(commitDisarmTimer);
+            commitDisarmTimer = setTimeout(resetCommitButton, DISARM_MS);
             return;
         }
 
-        if (mutationPending) {
-            return;
-        }
+        // Confirm click: cancel the pending auto-disarm so it can't fire during
+        // the save and re-open the arm race.
+        clearTimeout(commitDisarmTimer);
 
         mutationPending = true;
         commitButton.classList.add('disabled');
@@ -1372,7 +1412,10 @@ function buildCompositePane(getTargetMessageId, onCommitted) {
     render();
 
     pane.append(header, bodyHost);
-    return { element: pane, dispose };
+    // resetCommitArm lets the modal disarm the "changes an older message?" step
+    // when the target message changes underneath the pane — otherwise that arm,
+    // which is specific to one message, would carry to the next one.
+    return { element: pane, dispose, resetCommitArm: resetCommitButton };
 }
 
 /**
@@ -1421,6 +1464,13 @@ async function showSwipeSculpt(messageId) {
     searchInput.addEventListener('input', () => {
         clearTimeout(searchTimer);
         searchTimer = setTimeout(() => {
+            // Applying a search rebuilds the grid, which would discard an open
+            // pencil edit. Refuse and roll the box back to the last applied query.
+            if (swipeEditActive) {
+                toastr.info('Finish or cancel the open swipe edit first.', 'Swipe Sculpt');
+                searchInput.value = searchQuery;
+                return;
+            }
             searchQuery = searchInput.value;
             renderGrid();
         }, 150);
@@ -1464,7 +1514,18 @@ async function showSwipeSculpt(messageId) {
     const pickerHost = document.createElement('div');
     const renderPicker = () => {
         pickerHost.replaceChildren(buildMessagePicker(targets, activeId, (id) => {
+            // Switching messages rebuilds the grid, which would silently discard
+            // an open pencil edit. Refuse and snap the dropdown back to the
+            // current message so the selection matches what's actually shown.
+            if (swipeEditActive) {
+                toastr.info('Finish or cancel the open swipe edit first.', 'Swipe Sculpt');
+                renderPicker();
+                return;
+            }
             activeId = id;
+            // The "changes an older message?" arm belongs to the message it was
+            // armed on; a new target must start disarmed.
+            composite.resetCommitArm();
             renderGrid();
         }));
     };
