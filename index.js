@@ -603,28 +603,60 @@ function getSelectedFragment(card) {
     return source.value.slice(source.selectionStart, source.selectionEnd);
 }
 
+// Last non-empty rendered-view selection, remembered per card body. Focusing
+// any textarea — e.g. bouncing a card to its raw view — collapses
+// window.getSelection onto the textarea, destroying the rendered selection
+// before the Grab click can read it. selectionchange fires while the old
+// selection is still live, so we stash it here and fall back to it on click.
+// Tied to the originating body element so one card's Grab can never read
+// another card's selection. Module-level; the modal wires and clears it.
+let lastRenderedGrab = null;
+
 /**
- * Returns the plain text selected inside a card's rendered body, or '' if the
- * current selection isn't there. This is the browser's rendered text, with
- * markdown markers already stripped, so it is only trustworthy once mapped
- * back to the source — see resolveRenderedGrab.
+ * selectionchange handler: caches the current selection if it lives inside a
+ * card's rendered body. Collapsed selections and those outside any card body
+ * are ignored (not cleared) so a textarea focus can't wipe the stash.
+ */
+function trackRenderedSelection() {
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
+        return;
+    }
+    const container = selection.getRangeAt(0).commonAncestorContainer;
+    const element = container.nodeType === Node.ELEMENT_NODE ? container : container.parentElement;
+    const body = element?.closest('.swipeSculptCardBody');
+    if (!body) {
+        return;
+    }
+    lastRenderedGrab = { body, text: selection.toString() };
+}
+
+/**
+ * Returns the plain text selected inside a card's rendered body, or '' if there
+ * is none. This is the browser's rendered text, with markdown markers already
+ * stripped, so it is only trustworthy once mapped back to the source — see
+ * resolveRenderedGrab.
+ *
+ * Prefers the live selection when it is still inside this card; otherwise falls
+ * back to the cached selection, but only if that cache belongs to THIS card, so
+ * a grab is never satisfied by another card's leftover selection.
  * @param {HTMLElement} card
  * @returns {string}
  */
 function getRenderedSelection(card) {
-    const selection = window.getSelection();
-    if (!selection || selection.rangeCount === 0 || selection.isCollapsed) {
-        return '';
-    }
     const body = card.querySelector('.swipeSculptCardBody');
     if (!body) {
         return '';
     }
-    // Only honour a selection that actually lives inside this card's text.
-    if (!body.contains(selection.getRangeAt(0).commonAncestorContainer)) {
-        return '';
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0 && !selection.isCollapsed
+        && body.contains(selection.getRangeAt(0).commonAncestorContainer)) {
+        return selection.toString();
     }
-    return selection.toString();
+    if (lastRenderedGrab && lastRenderedGrab.body === body) {
+        return lastRenderedGrab.text;
+    }
+    return '';
 }
 
 /**
@@ -637,6 +669,13 @@ function getRenderedSelection(card) {
  * selection that crosses formatting won't be found; one that repeats is
  * ambiguous. Both fail here and the caller falls back to the code view, so a
  * wrong fragment is never grabbed silently.
+ *
+ * Line endings are canonicalized to LF on both sides before matching. The
+ * rendered view only ever yields LF, while a stored swipe may use CRLF, so
+ * without this any selection that crosses a line break fails to match and gets
+ * mistaken for "crosses formatting" — the CRLF grab bug. The returned fragment
+ * is therefore LF, which also matches the raw-view path (a textarea drops \r
+ * from its value on its own), keeping the whole composite uniformly LF.
  * @param {string} sourceText
  * @param {string} selectedText
  * @returns {{ok: true, fragment: string} | {ok: false, reason: 'empty'|'notfound'|'ambiguous'}}
@@ -645,14 +684,16 @@ function resolveRenderedGrab(sourceText, selectedText) {
     if (!selectedText) {
         return { ok: false, reason: 'empty' };
     }
-    const first = sourceText.indexOf(selectedText);
+    const source = sourceText.replace(/\r\n/g, '\n');
+    const selection = selectedText.replace(/\r\n/g, '\n');
+    const first = source.indexOf(selection);
     if (first === -1) {
         return { ok: false, reason: 'notfound' };
     }
-    if (sourceText.indexOf(selectedText, first + 1) !== -1) {
+    if (source.indexOf(selection, first + 1) !== -1) {
         return { ok: false, reason: 'ambiguous' };
     }
-    return { ok: true, fragment: sourceText.slice(first, first + selectedText.length) };
+    return { ok: true, fragment: source.slice(first, first + selection.length) };
 }
 
 /**
@@ -1490,6 +1531,9 @@ async function showSwipeSculpt(messageId) {
         // here — this covers the empty-search and no-target early returns too,
         // which never reach buildSwipeGrid and would otherwise soft-lock it on.
         swipeEditActive = false;
+        // The cached rendered selection points at a card body that this rebuild
+        // is about to replace; drop it so it can't outlive its card.
+        lastRenderedGrab = null;
         const target = targets.find(t => t.id === activeId);
         if (!target) {
             gridHost.replaceChildren();
@@ -1539,6 +1583,10 @@ async function showSwipeSculpt(messageId) {
     wrapper.appendChild(gridHost);
     renderGrid();
 
+    // Capture rendered-view selections as they happen, so a later Grab click
+    // still has them after a textarea focus would have collapsed the live one.
+    document.addEventListener('selectionchange', trackRenderedSelection);
+
     await context.callGenericPopup(wrapper, context.POPUP_TYPE.TEXT, '', {
         // `wide` only reaches --sheldWidth (~500px), which collapses the grid to
         // a single column. `wider` starts at 750px and scales with the viewport.
@@ -1546,6 +1594,9 @@ async function showSwipeSculpt(messageId) {
         large: true,
         allowVerticalScrolling: true,
     });
+
+    document.removeEventListener('selectionchange', trackRenderedSelection);
+    lastRenderedGrab = null;
 
     // The buffer survives the modal; only this view of it goes away.
     composite.dispose();

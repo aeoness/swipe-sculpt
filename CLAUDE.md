@@ -26,11 +26,14 @@ stitch by hand.
    generations.
 5. Any message by ID, not just the last one.
 
-## Scope: NOT NOW — do not build without asking first
-> Design history, possibly retired. Block mode + the sticky composite pane
-> (both shipped in 0.2.0) may already cover what this was meant to solve.
-> Kept as a record of the original thinking, not as a pending feature — do
-> not treat it as planned work.
+## Scope: RETIRED — design history, do not build
+> RETIRED 2026-08-20, superseded. Module-level `compositeState` already
+> outlives the modal, Blocks made the stitch session resumable, and 0.3.0's
+> planned reload-persistence closes the last gap. The problem this was
+> invented for (a work session fighting a modal that dies on close) is now
+> solved by other means. The architecture discipline it demanded — composite
+> state kept OUT of the modal lifecycle — was its real gift, and that's
+> already banked. Kept below only as a record of the original thinking.
 
 A floating, persistent editor window: own toggle icon, draggable,
 resizable, stays open while browsing swipes, retains contents when
@@ -71,10 +74,17 @@ into a standalone window later is a rewrite instead of a refactor.
   only the final trim of the whole composite is affected. This is the one
   place the byte-for-byte guarantee yields to a user setting, and it does
   so on purpose (a Sculpt edit should behave like any other ST edit).
-- Line endings: fragments are stored exactly as grabbed. If the chat file
-  uses CRLF, grabs carry CRLF; if LF, LF. Sculpt normalizes neither. Not
-  observed to cause problems — noted so a future CRLF surprise isn't
-  mistaken for a grabbing bug.
+- Line endings: Sculpt canonicalizes CRLF to LF on grab (as of 0.2.2).
+  The rendered view only ever yields LF, and the raw-view textarea
+  silently drops `\r` from its `.value`, so a grab is LF either way;
+  `resolveRenderedGrab` normalizes both sides before matching so a
+  selection crossing a CRLF line break still resolves. Before 0.2.2 it
+  did NOT normalize, and any rendered-view selection that crossed a line
+  break on a CRLF chat failed to match and got misreported as "crosses
+  formatting," bouncing to the raw view — the CRLF grab bug. A committed
+  swipe is therefore LF; ST's own editor normalizes to LF too, so this
+  matches native behavior. This was previously filed here as "not a bug";
+  it was one.
 
 ## Acceptance criteria
 Markdown fidelity is the make-or-break. The user's prose uses *italics*
@@ -85,6 +95,13 @@ and a trailing space; splice it into the composite; commit; then read
 the committed swipe back from chat.jsonl. It must match the source
 substring byte-for-byte. No whitespace normalization, no entity
 escaping, no asterisk mangling, no smart-quote substitution.
+
+The guarantee covers authored characters — asterisks, spacing, markdown,
+quotes. It does NOT cover line-ending encoding: CRLF is canonicalized to
+LF (see the line-endings note above), because the rendered and raw grab
+paths both yield LF and no consumer reads the `\r` back. So on a CRLF
+chat the committed fragment matches the source with `\r\n` read as `\n`,
+not literally byte-for-byte. That is the one intended exception.
 
 Selection and clipboard APIs normalize whitespace and strip formatting
 by default. Assume this will break until proven otherwise.
